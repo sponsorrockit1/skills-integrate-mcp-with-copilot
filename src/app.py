@@ -5,19 +5,43 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Depends, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
 import os
 from pathlib import Path
+import json
+from starlette.middleware.sessions import SessionMiddleware
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
+
+# Add session middleware
+app.add_middleware(SessionMiddleware, secret_key="your-secret-key")
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+# Templates
+templates = Jinja2Templates(directory=os.path.join(current_dir, "static"))
+
+# Load users
+with open(os.path.join(current_dir, "users.json")) as f:
+    users = json.load(f)
+
+def get_current_user(request: Request):
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+def require_admin(user: str = Depends(get_current_user)):
+    if users[user]["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 # In-memory activity database
 activities = {
@@ -78,9 +102,20 @@ activities = {
 }
 
 
-@app.get("/")
-def root():
-    return RedirectResponse(url="/static/index.html")
+@app.get("/login")
+def login_page(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+@app.post("/login")
+def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    if username in users and users[username]["password"] == password:
+        request.session["user"] = username
+        return RedirectResponse(url="/", status_code=302)
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@app.get("/admin")
+def admin_page(request: Request, user: str = Depends(require_admin)):
+    return templates.TemplateResponse("admin.html", {"request": request})
 
 
 @app.get("/activities")
@@ -111,8 +146,8 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, user: str = Depends(require_admin)):
+    """Unregister a student from an activity - Admin only"""
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
